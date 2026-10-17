@@ -1,45 +1,26 @@
-Install Arduino IDE:
-  https://www.arduino.cc/en/Main/Software "Download the Arduino IDE"
+PDDuino OpenLog build
+====================
+Target: original SparkFun OpenLog, ATmega328P at 16 MHz.
 
-Install libraries that all boards use:
-Tools -> Manage Libraries...
-  "SdFat"  (Bill Greiman, not the Adafruit fork, even for the Adafruit boards)
+Use Arduino AVR Boards 1.8.6 and Bill Greiman's SdFat 1.1.4.
+Keep SdFat's USE_LONG_FILE_NAMES enabled (the library default).
+SdFat 2.x is not a drop-in replacement.
 
-Board-specific one-time setups, and compile-time usage:
+In Arduino IDE select Arduino Uno as the compile profile. This selects the
+correct MCU and clock; verify the bootloader/programmer on your OpenLog before
+uploading. OpenLog Artemis, Feather and Teensy are not supported by this fork.
 
-Adafruit Feather 32u4
-install:
-  https://learn.adafruit.com/adafruit-feather-32u4-adalogger/setup
-use:
-  Tools -> Board -> Adafruit Boards -> Adafruit Feather 32u4
+CLI (tested with Arduino CLI 1.3.1):
+  arduino-cli core update-index
+  arduino-cli core install arduino:avr@1.8.6
+  arduino-cli lib install 'SdFat@1.1.4'
+  ./tools/build.sh
 
-Adafruit Feather M0
-install:
-  https://learn.adafruit.com/adafruit-feather-m0-basic-proto/setup
-  Tools -> Manage Libraries... -> "Arduino Low Power"
-use:
-  Tools -> Board -> Adafruit SAMD (32-bits ARM Cortex-M0+ and Cortex-M4) Boards -> Adafruit Feather M0
+The DSR input defaults to Arduino digital pin 6, active LOW. It requires an
+additional wire to a free GPIO on the OpenLog, NOT the header's DTR/reset pin.
+Set DSR_PIN / DSR_ACTIVE_LEVEL in PDDuino/board_OpenLog.h to match the actual
+wiring, or use a compiler override:
+  ./tools/build.sh --build-property 'compiler.cpp.extra_flags=-DDSR_PIN=6 -DDSR_ACTIVE_LEVEL=LOW'
 
-Teensy 3.5
-install:
-  https://www.pjrc.com/teensy/td_download.html
-use:
-  Tools -> Board -> Teensyduino -> Teensy 3.5
-for normal use:
-  Tools -> CPU Speed -> 2MHz
-  Tools -> Optimize -> "Fastest with LTO"
-for debugging:
-  Tools -> CPU Speed -> 24MHz or greater
-  Tools -> Optimize -> any
-
-Teensy 3.6
-install:
-  https://www.pjrc.com/teensy/td_download.html
-use:
-  Tools -> Board -> Teensyduino -> Teensy 3.6
-for normal use:
-  Tools -> CPU Speed -> 2MHz
-  Tools -> Optimize -> "Fastest with LTO"
-for debugging:
-  Tools -> CPU Speed -> 24MHz or greater
-  Tools -> Optimize -> any
+No LED, debug console, sleep, DTR output, or card-detect GPIO is used.
+See README.md for bootstrap, card exchange and validation instructions.

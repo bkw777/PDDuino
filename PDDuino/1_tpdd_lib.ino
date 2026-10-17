@@ -1,97 +1,91 @@
-// Append a string to directory[]
-void directoryAppend(const char* c){
-  bool t = false;
-  byte i = 0x00;
-  byte j = 0x00;
+void tpddWrite(uint8_t value) {
+  txChecksum += value;
+  CLIENT.write(value);
+}
 
-  DEBUG_PRINT(F("directoryAppend(")); DEBUG_PRINT(c); DEBUG_PRINTL(F(")"));
-  DEBUG_PRINT(F("directory[")); DEBUG_PRINT(directory); DEBUG_PRINTL(F("]"));
+void tpddSendChecksum() {
+  CLIENT.write(static_cast<uint8_t>(txChecksum ^ 0xFF));
+  txChecksum = 0;
+}
 
-  DEBUG_PRINTL(F("->"));
+void return_normal(uint8_t error) {
+  tpddWrite(RET_NORMAL);
+  tpddWrite(1);
+  tpddWrite(error);
+  tpddSendChecksum();
+}
 
-  while(directory[i] != 0x00) i++;
-
-  while(!t){
-    directory[i++] = c[j++];
-    t = c[j] == 0x00;
+// No paths, pseudo-directories, wildcards or non-ASCII FAT names are accepted.
+// PC names outside the TPDD name field are exposed by their FAT short alias.
+bool validName(const char* name) {
+  if (!name[0] || name[0] == ' ' || !strcmp(name, ".") || !strcmp(name, "..")) return false;
+  uint8_t n = 0;
+  while (name[n]) {
+    uint8_t c = name[n++];
+    if (c < 32 || c >= 127 || c == '/' || c == '\\' || c == ':' ||
+        c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') return false;
+    if (n > WIRE_NAME_SZ) return false;
   }
-
-  DEBUG_PRINT(F("directory[")); DEBUG_PRINT(directory); DEBUG_PRINTL(F("]"));
-  DEBUG_PRINT(F("directoryAppend(")); DEBUG_PRINT(c); DEBUG_PRINTL(F(") end"));
+  return name[n - 1] != ' ' && name[n - 1] != '.';
 }
 
-// Remove the last path element from directoy[]
-void upDirectory(){
-  byte j = DIRECTORY_SZ;
-
-  DEBUG_PRINTL(F("upDirectory()"));
-  DEBUG_PRINT(F("directory[")); DEBUG_PRINT(directory); DEBUG_PRINTL(F("]"));
-
-  while(directory[j] == 0x00) j--;
-  if(directory[j] == '/' && j!= 0x00) directory[j] = 0x00;
-  while(directory[j] != '/') directory[j--] = 0x00;
-
-  DEBUG_PRINT(F("directory[")); DEBUG_PRINT(directory); DEBUG_PRINTL(F("]"));
-}
-
-void copyDirectory(){ //Makes a copy of the working directory to a scratchpad
-  for(byte i=0x00; i<DIRECTORY_SZ; i++) tempDirectory[i] = directory[i];
-}
-
-
-// Fill dmeLabel[] with exactly 6 chars from s[], space-padded.
-// We could just read directory[] directly instead of passng s[]
-// but this way we can pass arbitrary values later. For example
-// FAT volume label, RTC time, battery level, ...
-void setLabel(const char* s) {
-  byte z = DIRECTORY_SZ;
-  byte j = z;
-
-  DEBUG_PRINT(F("setLabel(")); DEBUG_PRINT(s); DEBUG_PRINTL(F(")"));
-  DEBUG_PRINT(F("directory[")); DEBUG_PRINT(directory); DEBUG_PRINTL(F("]"));
-  DEBUG_PRINT(F("dmeLabel["));  DEBUG_PRINT(dmeLabel);  DEBUG_PRINTL(F("]"));
-
-  while(s[j] == 0x00) j--;            // seek from end to non-null
-  if(s[j] == '/' && j > 0x00) j--;    // seek past trailing slash if any
-  z = j;                              // mark end of name
-  while(s[j] != '/' && j > 0x00) j--; // seek to next slash or start of string
-  if(s[j] == '/') j++;                // don't include the slash if any
-
-  // copy 6 chars, up to z or null, space pad
-  for(byte i=0x00 ; i<0x06 ; i++) {
-     if(s[j]>0x00 && j<=z) dmeLabel[i] = s[j]; else dmeLabel[i] = ' ';
-     j++;
+// Decode in place or into a different buffer. Only TPDD base-name padding
+// immediately before the dot is removed; spaces inside a PC name survive.
+bool decodeName(const uint8_t* source, char* dest) {
+  uint8_t n = 0;
+  while (n < WIRE_NAME_SZ && source[n]) ++n;
+  while (n && source[n - 1] == ' ') --n;
+  uint8_t out = 0;
+  for (uint8_t i = 0; i < n; ++i) {
+    if (source[i] == '.' && i == 6) {
+      while (out && dest[out - 1] == ' ') --out;
+    }
+    dest[out++] = source[i];
   }
-  dmeLabel[0x06] = 0x00;
-
-  DEBUG_PRINT(F("dmeLabel[")); DEBUG_PRINT(dmeLabel); DEBUG_PRINTL(F("]"));
+  dest[out] = 0;
+  return validName(dest);
 }
 
-/*
- *
- * TPDD Port misc. routines
- *
- */
-
-void tpddWrite(char c){  // Outputs char c to TPDD port and adds to the checksum
-  checksum += c;
-  CLIENT.write(c);
+// Does this name survive TPDD's six-character base padding and 24-byte field?
+bool wireNameFits(const char* name) {
+  if (!validName(name)) return false;
+  const char* dot = strchr(name, '.');
+  size_t base = dot ? static_cast<size_t>(dot - name) : strlen(name);
+  if (dot && base && name[base - 1] == ' ') return false;
+  size_t padded = strlen(name) + (base < 6 ? 6 - base : 0);
+  return padded <= WIRE_NAME_SZ;
 }
 
-void tpddWriteString(char* c){  // Outputs a null-terminated char array c to the TPDD port
-  byte i = 0x00;
-  while(c[i] != 0x00){
-    tpddWrite(c[i++]);
+void returnReference(const char* name, uint32_t size) {
+  tpddWrite(RET_DIRECTORY);
+  tpddWrite(0x1C);
+  uint8_t sent = 0;
+  if (name) {
+    const char* dot = strchr(name, '.');
+    size_t base = dot ? static_cast<size_t>(dot - name) : strlen(name);
+    for (size_t i = 0; i < base; ++i) { tpddWrite(name[i]); ++sent; }
+    while (sent < 6) { tpddWrite(' '); ++sent; }
+    if (dot) {
+      while (*dot) { tpddWrite(*dot++); ++sent; }
+    }
   }
+  while (sent++ < WIRE_NAME_SZ) tpddWrite(0);
+  tpddWrite(0);  // Attribute
+  uint16_t wireSize = size > 0xFFFFUL ? 0xFFFF : static_cast<uint16_t>(size);
+  tpddWrite(wireSize >> 8);
+  tpddWrite(wireSize & 0xFF);
+  tpddWrite(0x80);  // Free-sector compatibility value, as in upstream
+  tpddSendChecksum();
 }
 
-//void tpddWriteBuf(uint8_t *data, uint16_t len) {
-//  for(uint16_t i = 0; i < len; i++) {
-//    tpddWrite(data[i]);
-//  }
-//}
-
-void tpddSendChecksum(){  // Outputs the checksum to the TPDD port and clears the checksum
-  CLIENT.write(checksum ^ 0xFF);
-  checksum = 0x00;
+// Use the packet buffer to obtain the entire FAT name, so a truncated long
+// name can never accidentally reference a different file on the PC's card.
+bool selectEntryName() {
+  char* name = reinterpret_cast<char*>(packet);
+  if (!entry.getName(name, sizeof(packet))) return false;
+  if (!wireNameFits(name)) {
+    if (!entry.getSFN(name) || !wireNameFits(name)) return false;
+  }
+  strcpy(selectedName, name);
+  return true;
 }
